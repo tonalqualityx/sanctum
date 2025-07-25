@@ -1,0 +1,78 @@
+@import 'tailwindcss/base';
+@import 'tailwindcss/components';
+@import 'tailwindcss/utilities';
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html {
+    @apply bg-dark-bg text-dark-text;
+  }
+
+  body {
+    @apply antialiased;
+  }
+
+  * {
+    @apply border-dark-border;
+  }
+}
+
+@layer components {
+  .btn-primary {
+    @apply bg-sanctum-600 hover:bg-sanctum-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply bg-dark-card hover:bg-dark-border text-dark-text font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .btn-danger {
+    @apply bg-red-600 hover:bg-red-700 text-white font-medium py-2 px-4 rounded-lg transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+
+  .card {
+    @apply bg-dark-card border border-dark-border rounded-lg p-6 shadow-lg;
+  }
+
+  .input-field {
+    @apply w-full bg-dark-bg border border-dark-border rounded-lg px-4 py-2 text-dark-text placeholder-dark-muted focus:outline-none focus:ring-2 focus:ring-sanctum-500 focus:border-transparent transition-all duration-200;
+  }
+
+  .status-indicator {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .status-running {
+    @apply bg-green-900/20 text-green-400;
+  }
+
+  .status-stopped {
+    @apply bg-gray-900/20 text-gray-400;
+  }
+
+  .status-error {
+    @apply bg-red-900/20 text-red-400;
+  }
+
+  .status-pending {
+    @apply bg-yellow-900/20 text-yellow-400;
+  }
+}
+
+@layer utilities {
+  .animate-pulse-slow {
+    animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+}

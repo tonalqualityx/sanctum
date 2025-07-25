@@ -1,0 +1,100 @@
+server {
+    listen 80;
+    listen [::]:80;
+    server_name {{DOMAIN}} www.{{DOMAIN}};
+    
+    # Redirect HTTP to HTTPS
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    listen [::]:443 ssl http2;
+    server_name {{DOMAIN}} www.{{DOMAIN}};
+    
+    # SSL configuration
+    ssl_certificate /etc/nginx/ssl/cert.pem;
+    ssl_certificate_key /etc/nginx/ssl/key.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+    ssl_prefer_server_ciphers on;
+    
+    # Root directory
+    root /var/www/html;
+    index index.php index.html index.htm;
+    
+    # Logs
+    access_log /var/log/nginx/{{DOMAIN}}.access.log;
+    error_log /var/log/nginx/{{DOMAIN}}.error.log;
+    
+    # Upload size
+    client_max_body_size 64M;
+    
+    # Gzip compression
+    gzip on;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
+    
+    location / {
+        try_files $uri $uri/ /index.php?$args;
+    }
+    
+    # PHP handling
+    location ~ \.php$ {
+        try_files $uri =404;
+        fastcgi_split_path_info ^(.+\.php)(/.+)$;
+        fastcgi_pass php:9000;
+        fastcgi_index index.php;
+        include fastcgi_params;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        fastcgi_param PATH_INFO $fastcgi_path_info;
+        fastcgi_param HTTPS on;
+        
+        # PHP timeouts
+        fastcgi_read_timeout 300;
+        fastcgi_send_timeout 300;
+        fastcgi_connect_timeout 300;
+    }
+    
+    # Deny access to sensitive files
+    location ~ /\.(?!well-known).* {
+        deny all;
+    }
+    
+    location = /favicon.ico {
+        log_not_found off;
+        access_log off;
+    }
+    
+    location = /robots.txt {
+        allow all;
+        log_not_found off;
+        access_log off;
+    }
+    
+    # WordPress specific rules
+    location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+        expires max;
+        log_not_found off;
+        add_header Cache-Control "public, immutable";
+    }
+    
+    # Deny access to uploads that aren't images, videos, music, etc.
+    location ~* ^/wp-content/uploads/.*\.(?!(jpg|jpeg|png|gif|ico|svg|webp|mp3|mp4|wav|ogg|webm|pdf))$ {
+        deny all;
+    }
+    
+    # Deny public access to wp-config.php
+    location ~* wp-config.php {
+        deny all;
+    }
+    
+    # Deny access to wp-admin for non-SSL connections
+    location ~ ^/(wp-admin|wp-login.php) {
+        # Ensure HTTPS for admin area
+        if ($https != "on") {
+            return 301 https://$server_name$request_uri;
+        }
+    }
+}

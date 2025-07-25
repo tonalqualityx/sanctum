@@ -1,0 +1,47 @@
+[Unit]
+Description=The Sanctum WordPress Development Environment Manager
+Documentation=https://github.com/sanctum/sanctum
+After=network.target docker.service
+Requires=docker.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=mike
+Group=mike
+WorkingDirectory=/home/mike/sanctum/app
+
+# Environment variables
+Environment="NODE_ENV=production"
+Environment="SANCTUM_HOME=/home/mike/sanctum"
+Environment="USER=mike"
+Environment="HOME=/home/mike"
+Environment="PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+# Docker socket access
+SupplementaryGroups=docker
+
+# Start command
+ExecStart=/usr/bin/node server.js
+
+# Restart configuration
+Restart=always
+RestartSec=10
+
+# Process management
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Logging
+StandardOutput=append:/home/mike/sanctum/logs/sanctum.log
+StandardError=append:/home/mike/sanctum/logs/sanctum-error.log
+
+# Security settings (minimal restrictions for development environment)
+PrivateTmp=false
+ProtectSystem=false
+ProtectHome=false
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

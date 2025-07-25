@@ -1,0 +1,61 @@
+{
+  "name": "sanctum",
+  "version": "1.0.0",
+  "description": "A comprehensive Docker-based WordPress development environment manager for Ubuntu",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server:dev\" \"npm run frontend:dev\"",
+    "server:dev": "nodemon server.js",
+    "frontend:dev": "cd frontend && npm run dev",
+    "build": "cd frontend && npm run build",
+    "start": "NODE_ENV=production node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "setup": "cd .. && ./scripts/install-sanctum.sh",
+    "setup:permissions": "cd .. && ./scripts/setup-user-permissions.sh",
+    "service:install": "cd .. && sudo cp config/sanctum.service /etc/systemd/system/ && sudo systemctl daemon-reload",
+    "service:start": "sudo systemctl start sanctum",
+    "service:stop": "sudo systemctl stop sanctum",
+    "service:restart": "sudo systemctl restart sanctum",
+    "service:status": "sudo systemctl status sanctum",
+    "service:enable": "sudo systemctl enable sanctum",
+    "service:logs": "sudo journalctl -u sanctum -f"
+  },
+  "keywords": [
+    "wordpress",
+    "docker",
+    "development",
+    "environment"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "adm-zip": "^0.5.16",
+    "axios": "^1.11.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dockerode": "^4.0.2",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "express-rate-limit": "^7.1.5",
+    "fs-extra": "^11.3.0",
+    "helmet": "^7.1.0",
+    "joi": "^17.11.0",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "sqlite3": "^5.1.6",
+    "winston": "^3.11.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.10.5",
+    "concurrently": "^8.2.2",
+    "eslint": "^8.56.0",
+    "nodemon": "^3.0.2",
+    "prettier": "^3.1.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

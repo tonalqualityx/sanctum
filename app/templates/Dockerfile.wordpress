@@ -1,0 +1,41 @@
+# Dockerfile for WordPress with WP-CLI
+# This extends the official WordPress image to include WP-CLI
+
+ARG PHP_VERSION=8.1
+FROM wordpress:6.4-php${PHP_VERSION}-apache
+
+# Install WP-CLI
+RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    && chmod +x wp-cli.phar \
+    && mv wp-cli.phar /usr/local/bin/wp
+
+# Install additional PHP extensions for WordPress development
+RUN apt-get update && apt-get install -y \
+    git \
+    unzip \
+    zip \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Composer for PHP package management
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Set proper permissions for WordPress
+RUN chown -R www-data:www-data /var/www/html
+
+# Enable Apache modules
+RUN a2enmod rewrite headers expires
+
+# Create wp-content directories with proper permissions
+RUN mkdir -p /var/www/html/wp-content/uploads \
+    && mkdir -p /var/www/html/wp-content/themes \
+    && mkdir -p /var/www/html/wp-content/plugins \
+    && chown -R www-data:www-data /var/www/html/wp-content
+
+# Set the working directory
+WORKDIR /var/www/html
+
+# Expose port 80
+EXPOSE 80
+
+# Use the default WordPress entrypoint
+CMD ["apache2-foreground"]

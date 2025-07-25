@@ -1,0 +1,30 @@
+; PHP configuration for Sanctum WordPress sites
+upload_max_filesize = 100M
+post_max_size = 100M
+memory_limit = 256M
+max_execution_time = 300
+max_input_vars = 5000
+
+; Error handling
+display_errors = On
+display_startup_errors = On
+log_errors = On
+error_log = /var/log/php_errors.log
+error_reporting = E_ALL
+
+; Session settings
+session.save_handler = redis
+session.save_path = "tcp://redis:6379"
+session.gc_maxlifetime = 3600
+
+; OPcache settings
+opcache.enable = 1
+opcache.memory_consumption = 128
+opcache.interned_strings_buffer = 8
+opcache.max_accelerated_files = 4000
+opcache.revalidate_freq = 60
+opcache.fast_shutdown = 1
+
+; File upload settings
+file_uploads = On
+max_file_uploads = 20

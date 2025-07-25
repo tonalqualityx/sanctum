@@ -86,6 +86,9 @@ class DockerManager {
       // 7. Wait for containers to be healthy
       await this.waitForContainerHealth(name);
       
+      // 7.5. Fix volume permissions after containers have initialized
+      await this.fixVolumePermissions(sitePath);
+      
       // 8. Update site with container info
       await this.updateSiteContainerInfo(id, ports);
       
@@ -448,6 +451,18 @@ class DockerManager {
       'logs'
     ];
 
+    // Get current user info first
+    const currentUser = process.env.USER || 'mike';
+    const { stdout: uidResult } = await execAsync('id -u');
+    const { stdout: gidResult } = await execAsync('id -g');
+    const uid = uidResult.trim();
+    const gid = gidResult.trim();
+    
+    logger.info(`Creating site directories with user ${currentUser} (${uid}:${gid})`, {
+      service: 'sanctum',
+      sitePath
+    });
+
     // Create parent directory with proper permissions
     await permissionHelper.createDirectory(sitePath, 0o775);
     
@@ -455,10 +470,58 @@ class DockerManager {
     for (const dir of directories) {
       const dirPath = path.join(sitePath, dir);
       await permissionHelper.createDirectory(dirPath, 0o775);
+      
+      // Immediately ensure correct ownership after creation
+      try {
+        await execAsync(`chown ${uid}:${gid} "${dirPath}"`);
+      } catch (e) {
+        logger.warn(`Could not set ownership for ${dirPath}: ${e.message}`);
+      }
     }
     
     // Set development permissions on the entire site directory
     await permissionHelper.setDevelopmentPermissions(sitePath);
+    
+    // Pre-create some files/directories for MySQL and Redis to prevent permission issues
+    // MySQL needs an empty directory, Redis will create its own files
+    try {
+      const dbPath = path.join(sitePath, 'database');
+      const redisPath = path.join(sitePath, 'redis');
+      
+      logger.info(`Ensuring volume directories have correct ownership`, {
+        service: 'sanctum',
+        dbPath,
+        redisPath
+      });
+      
+      // Ensure directories are owned by current user before Docker creates files
+      await execAsync(`chown ${uid}:${gid} "${dbPath}" "${redisPath}" || true`);
+      
+      // Verify ownership
+      const dbStats = await fs.stat(dbPath);
+      const redisStats = await fs.stat(redisPath);
+      
+      if (dbStats.uid !== parseInt(uid) || redisStats.uid !== parseInt(uid)) {
+        logger.warn(`Directory ownership verification failed - attempting to fix with sudo`, {
+          service: 'sanctum',
+          expected: uid,
+          dbActual: dbStats.uid,
+          redisActual: redisStats.uid
+        });
+        
+        const canSudo = await permissionHelper.checkSudoNoPassword();
+        if (canSudo) {
+          await execAsync(`sudo chown -R ${uid}:${gid} "${sitePath}"`);
+          logger.info(`Fixed ownership with sudo for ${sitePath}`);
+        }
+      }
+      
+    } catch (error) {
+      logger.warn(`Could not pre-set volume permissions: ${error.message}`, {
+        service: 'sanctum',
+        sitePath
+      });
+    }
   }
 
   async generateConfigurationFiles(sitePath, config) {
@@ -1005,6 +1068,89 @@ class DockerManager {
       return !!site;
     } catch (error) {
       return false;
+    }
+  }
+
+  async fixVolumePermissions(sitePath) {
+    try {
+      logger.info(`Fixing volume permissions for ${sitePath}`, {
+        service: 'sanctum'
+      });
+      
+      // Get current user info
+      const currentUser = process.env.USER || 'mike';
+      const { stdout: uidResult } = await execAsync('id -u');
+      const { stdout: gidResult } = await execAsync('id -g');
+      const uid = uidResult.trim();
+      const gid = gidResult.trim();
+      
+      // Directories that need permission fixes
+      const volumeDirs = ['database', 'redis'];
+      
+      for (const dir of volumeDirs) {
+        const dirPath = path.join(sitePath, dir);
+        
+        try {
+          // Check if directory exists and has files
+          const stats = await fs.stat(dirPath);
+          if (stats.isDirectory()) {
+            // Try to change ownership
+            try {
+              await execAsync(`chown -R ${uid}:${gid} "${dirPath}"`);
+              logger.info(`Fixed permissions for ${dir} directory`, {
+                service: 'sanctum',
+                path: dirPath,
+                uid,
+                gid
+              });
+            } catch (chownError) {
+              // If regular chown fails, try with sudo
+              const canSudo = await permissionHelper.checkSudoNoPassword();
+              if (canSudo) {
+                await execAsync(`sudo chown -R ${uid}:${gid} "${dirPath}"`);
+                logger.info(`Fixed permissions for ${dir} directory with sudo`, {
+                  service: 'sanctum',
+                  path: dirPath
+                });
+              } else {
+                logger.warn(`Could not fix permissions for ${dir} directory: ${chownError.message}`, {
+                  service: 'sanctum',
+                  path: dirPath
+                });
+              }
+            }
+          }
+        } catch (error) {
+          logger.debug(`Directory ${dirPath} does not exist or cannot be accessed: ${error.message}`, {
+            service: 'sanctum'
+          });
+        }
+      }
+      
+      // Also run the fix script if it exists
+      const fixScriptPath = path.join(process.cwd(), 'scripts', 'fix-volume-permissions.sh');
+      try {
+        const scriptStats = await fs.stat(fixScriptPath);
+        if (scriptStats.isFile()) {
+          await execAsync(`bash "${fixScriptPath}" "${sitePath}"`);
+          logger.info(`Ran volume permission fix script`, {
+            service: 'sanctum',
+            sitePath
+          });
+        }
+      } catch (error) {
+        logger.debug(`Fix script not found or not executable: ${error.message}`, {
+          service: 'sanctum'
+        });
+      }
+      
+    } catch (error) {
+      logger.warn(`Failed to fix volume permissions: ${error.message}`, {
+        service: 'sanctum',
+        sitePath,
+        error: error.stack
+      });
+      // Don't throw - this is not critical for site creation
     }
   }
 }

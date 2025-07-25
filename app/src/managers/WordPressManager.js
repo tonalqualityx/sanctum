@@ -508,8 +508,18 @@ require_once ABSPATH . 'wp-settings.php';
       await fs.unlink(tempFile);
       
       // Set proper permissions
-      await execAsync(`docker exec ${containerName} chown www-data:www-data /var/www/html/wp-config.php`);
-      await execAsync(`docker exec ${containerName} chmod 644 /var/www/html/wp-config.php`);
+      try {
+        await execAsync(`docker exec ${containerName} chown www-data:www-data /var/www/html/wp-config.php`);
+        await execAsync(`docker exec ${containerName} chmod 644 /var/www/html/wp-config.php`);
+      } catch (permError) {
+        // If chown fails (likely due to volume permissions), just ensure the file is readable
+        logger.warn(`Could not change ownership of wp-config.php, ensuring it's readable: ${permError.message}`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+        // At least make sure the file is readable by all
+        await execAsync(`docker exec ${containerName} chmod 644 /var/www/html/wp-config.php || true`);
+      }
       
       logger.info(`wp-config.php generated successfully in container`, {
         service: 'wordpress',

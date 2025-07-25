@@ -31,6 +31,15 @@ RUN mkdir -p /var/www/html/wp-content/uploads \
     && mkdir -p /var/www/html/wp-content/plugins \
     && chown -R www-data:www-data /var/www/html/wp-content
 
+# Fix user permissions for proper file ownership
+RUN usermod -u 1000 www-data && \
+    groupmod -g 1000 www-data && \
+    chown -R 1000:1000 /var/www/html
+
+# Fix Apache configuration
+RUN sed -i 's/User www-data/User #1000/' /etc/apache2/apache2.conf && \
+    sed -i 's/Group www-data/Group #1000/' /etc/apache2/apache2.conf
+
 # Set the working directory
 WORKDIR /var/www/html
 

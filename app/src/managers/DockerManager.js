@@ -602,7 +602,7 @@ class DockerManager {
         GID: process.getgid ? process.getgid().toString() : '1000'
       };
       
-      const process = spawn(dockerCommand, dockerArgs, { 
+      const childProcess = spawn(dockerCommand, dockerArgs, { 
         cwd: workingDir,
         stdio: 'pipe',
         env
@@ -611,7 +611,7 @@ class DockerManager {
       let stdout = '';
       let stderr = '';
       
-      process.stdout.on('data', (data) => {
+      childProcess.stdout.on('data', (data) => {
         const output = data.toString();
         stdout += output;
         // Log important docker-compose output
@@ -620,7 +620,7 @@ class DockerManager {
         }
       });
       
-      process.stderr.on('data', (data) => {
+      childProcess.stderr.on('data', (data) => {
         const output = data.toString();
         stderr += output;
         // Log warnings and errors but not normal docker-compose progress
@@ -629,7 +629,7 @@ class DockerManager {
         }
       });
       
-      process.on('close', (code) => {
+      childProcess.on('close', (code) => {
         if (code === 0) {
           logger.info(`Docker compose command completed successfully`, {
             service: 'sanctum',
@@ -664,7 +664,7 @@ class DockerManager {
         }
       });
       
-      process.on('error', (error) => {
+      childProcess.on('error', (error) => {
         logger.error(`Docker compose process error`, {
           service: 'sanctum',
           error: error.message,

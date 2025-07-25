@@ -61,9 +61,12 @@ class WordPressManager {
       await this.emitProgress(siteData.id, steps[0], 10);
       const sitePath = await this.createSiteStructure(siteData);
       
-      // Step 2: Copy WordPress files from container to host
+      // Step 2: WordPress files already prepared by DockerManager
       await this.emitProgress(siteData.id, steps[1], 20);
-      await this.copyWordPressFromContainer(siteData);
+      logger.info(`WordPress files already prepared during container creation`, {
+        service: 'wordpress',
+        siteId: siteData.id
+      });
       
       // Step 3: Generate wp-config.php using docker exec
       await this.emitProgress(siteData.id, steps[3], 40);
@@ -624,7 +627,57 @@ require_once ABSPATH . 'wp-settings.php';
     
     try {
       // Wait a bit more for database to be fully ready
-      await new Promise(resolve => setTimeout(resolve, 5000));
+      logger.info(`Waiting for database to be fully ready before WordPress installation...`, {
+        service: 'wordpress',
+        siteId: siteData.id
+      });
+      await new Promise(resolve => setTimeout(resolve, 10000)); // Increased to 10 seconds
+      
+      // First, verify WP-CLI is available
+      try {
+        const wpVersionCheck = execSync(`docker exec ${containerName} wp --version`, { encoding: 'utf8' });
+        logger.info(`WP-CLI available: ${wpVersionCheck.trim()}`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+      } catch (wpError) {
+        logger.error(`WP-CLI not available in container: ${wpError.message}`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+        throw new Error('WP-CLI not available in container');
+      }
+      
+      // Verify WordPress files exist
+      try {
+        const wpCheck = execSync(`docker exec ${containerName} ls -la /var/www/html/wp-admin`, { encoding: 'utf8' });
+        logger.info(`WordPress files verified in container`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+      } catch (fileError) {
+        logger.error(`WordPress files not found: ${fileError.message}`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+        throw new Error('WordPress files not found in container');
+      }
+      
+      // Test database connection from WordPress container
+      try {
+        const dbTest = execSync(`docker exec ${containerName} wp --allow-root --path=/var/www/html db check`, { encoding: 'utf8' });
+        logger.info(`Database connection verified: ${dbTest.trim()}`, {
+          service: 'wordpress',
+          siteId: siteData.id
+        });
+      } catch (dbError) {
+        logger.error(`Database connection failed: ${dbError.message}`, {
+          service: 'wordpress',
+          siteId: siteData.id,
+          stderr: dbError.stderr?.toString()
+        });
+        throw new Error(`Database connection failed: ${dbError.message}`);
+      }
       
       logger.info(`Installing WordPress for ${siteData.domain}`, {
         service: 'wordpress',
@@ -644,17 +697,27 @@ require_once ABSPATH . 'wp-settings.php';
         '--skip-email'
       ];
       
-      execSync(installCmd.join(' '), { 
-        stdio: 'pipe',
+      const result = execSync(installCmd.join(' '), { 
+        encoding: 'utf8',
         timeout: 60000 
       });
       
       logger.info(`WordPress core installed for ${siteData.domain}`, {
         service: 'wordpress',
-        siteId: siteData.id
+        siteId: siteData.id,
+        output: result.trim()
       });
       
     } catch (error) {
+      // Log full error details
+      logger.error(`WordPress installation failed`, {
+        service: 'wordpress',
+        siteId: siteData.id,
+        error: error.message,
+        stdout: error.stdout?.toString(),
+        stderr: error.stderr?.toString(),
+        status: error.status
+      });
       throw new Error(`WordPress installation failed: ${error.message}`);
     }
   }

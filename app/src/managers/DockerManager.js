@@ -58,7 +58,10 @@ class DockerManager {
       // 2. Allocate ports
       const ports = await this.allocatePorts(id);
       
-      // 3. Generate configuration files
+      // 3. Prepare WordPress files BEFORE starting containers
+      await this.prepareWordPressFiles(sitePath, php_version);
+      
+      // 4. Generate configuration files
       // Sanitize site name for Docker Compose project name
       const sanitizedName = this.sanitizeProjectName(name || domain);
       
@@ -69,7 +72,7 @@ class DockerManager {
         ports 
       });
       
-      // 4. Generate Docker Compose file
+      // 5. Generate Docker Compose file
       await this.generateDockerComposeFile(sitePath, {
         siteName: sanitizedName,
         domain,
@@ -77,19 +80,21 @@ class DockerManager {
         ports
       });
       
-      // 5. Create Docker network if needed
+      // 6. Create Docker network if needed
       await this.ensureDockerNetwork();
       
-      // 6. Start containers using docker-compose
+      // 7. Start containers using docker-compose
       await this.startDockerCompose(sitePath, name);
       
-      // 7. Wait for containers to be healthy
+      // 8. Wait for containers to be healthy
       await this.waitForContainerHealth(name);
       
-      // 7.5. Fix volume permissions after containers have initialized
-      await this.fixVolumePermissions(sitePath);
+      // 9. Fix volume permissions after containers have initialized
+      // NOTE: Skipping database/redis permission fixes to avoid errors
+      // These directories are managed by their respective containers
+      await this.fixWordPressPermissions(sitePath);
       
-      // 8. Update site with container info
+      // 10. Update site with container info
       await this.updateSiteContainerInfo(id, ports);
       
       logger.info(`Site containers created successfully: ${domain}`, { siteId: id });
@@ -290,6 +295,47 @@ class DockerManager {
       
     } catch (error) {
       logger.error(`Failed to get container logs: ${error.message}`, { siteId, service });
+      throw error;
+    }
+  }
+
+  async cleanupExistingContainers(siteName) {
+    try {
+      logger.info(`Cleaning up existing containers for ${siteName}`);
+      
+      // Get containers by prefix
+      const containers = await this.getContainersByPrefix(siteName);
+      
+      if (containers.length === 0) {
+        logger.info(`No existing containers found for ${siteName}`);
+        return;
+      }
+      
+      // Stop and remove each container
+      for (const container of containers) {
+        try {
+          const info = await container.inspect();
+          const containerName = info.Name.substring(1);
+          
+          logger.info(`Stopping container: ${containerName}`);
+          await container.stop({ t: 10 }); // 10 second timeout
+          
+          logger.info(`Removing container: ${containerName}`);
+          await container.remove({ force: true });
+          
+        } catch (containerError) {
+          logger.warn(`Error cleaning up container: ${containerError.message}`);
+          // Continue with other containers
+        }
+      }
+      
+      // Small delay to ensure cleanup is complete
+      await new Promise(resolve => setTimeout(resolve, 2000));
+      
+      logger.info(`Container cleanup completed for ${siteName}`);
+      
+    } catch (error) {
+      logger.error(`Container cleanup failed for ${siteName}: ${error.message}`);
       throw error;
     }
   }
@@ -521,6 +567,49 @@ class DockerManager {
         service: 'sanctum',
         sitePath
       });
+    }
+  }
+
+  async prepareWordPressFiles(sitePath, phpVersion = '8.1') {
+    const wordpressPath = path.join(sitePath, 'wordpress');
+    
+    try {
+      logger.info(`Preparing WordPress files for ${sitePath}`, {
+        service: 'sanctum'
+      });
+      
+      // Check if WordPress files already exist
+      const wpConfigSample = path.join(wordpressPath, 'wp-config-sample.php');
+      if (existsSync(wpConfigSample)) {
+        logger.info(`WordPress files already exist at ${wordpressPath}`, {
+          service: 'sanctum'
+        });
+        return;
+      }
+      
+      // Extract WordPress files from the Docker image
+      logger.info(`Extracting WordPress files from Docker image`, {
+        service: 'sanctum',
+        phpVersion
+      });
+      
+      // Use docker run to extract files without starting a full container
+      const extractCmd = `docker run --rm -v "${wordpressPath}":/out wordpress:6.4-php${phpVersion}-apache sh -c "cp -r /usr/src/wordpress/* /out/ && chown -R 1000:1000 /out/"`;
+      
+      await execAsync(extractCmd);
+      
+      logger.info(`WordPress files extracted successfully`, {
+        service: 'sanctum',
+        destination: wordpressPath
+      });
+      
+    } catch (error) {
+      logger.error(`Failed to prepare WordPress files: ${error.message}`, {
+        service: 'sanctum',
+        sitePath,
+        error: error.stack
+      });
+      throw error;
     }
   }
 
@@ -795,12 +884,17 @@ class DockerManager {
     await this.execDockerCompose('down -v', sitePath);
   }
 
-  async waitForContainerHealth(siteName, timeout = 60000) {
+  async waitForContainerHealth(siteName, timeout = 180000) { // Increased to 3 minutes
     const startTime = Date.now();
     let lastError = null;
     let containerCount = 0;
+    let consecutiveSuccessChecks = 0;
+    const requiredSuccessChecks = 3; // Require 3 consecutive successful checks
     
-    logger.info(`Waiting for containers to be healthy: ${siteName}`, { timeout });
+    logger.info(`Waiting for containers to be healthy: ${siteName}`, { 
+      timeout: timeout / 1000 + 's',
+      requiredSuccessChecks 
+    });
     
     while (Date.now() - startTime < timeout) {
       try {
@@ -809,76 +903,246 @@ class DockerManager {
         
         if (containers.length === 0) {
           logger.warn(`No containers found for ${siteName}, waiting...`);
-          await new Promise(resolve => setTimeout(resolve, 2000));
+          await new Promise(resolve => setTimeout(resolve, 3000));
           continue;
         }
         
         const healthChecks = await Promise.all(
           containers.map(async (container) => {
-            const info = await container.inspect();
-            return {
-              name: info.Name,
-              running: info.State.Running,
-              health: info.State.Health?.Status || 'none',
-              exitCode: info.State.ExitCode,
-              error: info.State.Error
-            };
+            try {
+              const info = await container.inspect();
+              return {
+                name: info.Name.substring(1), // Remove leading slash
+                service: this.extractServiceFromName(info.Name),
+                running: info.State.Running,
+                health: info.State.Health?.Status || 'none',
+                exitCode: info.State.ExitCode,
+                error: info.State.Error,
+                startedAt: info.State.StartedAt,
+                pid: info.State.Pid
+              };
+            } catch (error) {
+              return {
+                name: 'unknown',
+                service: 'unknown',
+                running: false,
+                health: 'error',
+                error: error.message
+              };
+            }
           })
         );
         
-        // Log container states for debugging
-        logger.debug(`Container health check status for ${siteName}:`, {
+        // Enhanced logging for debugging
+        logger.info(`Container health check ${Math.floor((Date.now() - startTime) / 1000)}s for ${siteName}:`, {
           containers: healthChecks.map(c => ({
-            name: c.name,
+            service: c.service,
             running: c.running,
             health: c.health,
-            exitCode: c.exitCode
+            exitCode: c.exitCode,
+            pid: c.pid
           }))
         });
         
-        // Check for failed containers
+        // Check for failed containers (exited with non-zero code)
         const failedContainers = healthChecks.filter(check => 
-          !check.running && check.exitCode !== 0
+          !check.running && check.exitCode !== 0 && check.exitCode !== null
         );
         
         if (failedContainers.length > 0) {
-          const errorMsg = `Containers failed to start: ${failedContainers.map(c => c.name).join(', ')}`;
+          const errorMsg = `Containers failed to start: ${failedContainers.map(c => `${c.service}(exit:${c.exitCode})`).join(', ')}`;
           logger.error(errorMsg, {
             siteName,
-            failedContainers
+            failedContainers: failedContainers.map(c => ({
+              service: c.service,
+              exitCode: c.exitCode,
+              error: c.error
+            }))
           });
           throw new Error(errorMsg);
         }
         
-        const allHealthy = healthChecks.every(check => 
-          check.running && (check.health === 'healthy' || check.health === 'none')
-        );
+        // Enhanced health check logic
+        const serviceHealthStatus = await this.checkServiceHealth(healthChecks, siteName);
         
-        if (allHealthy) {
-          logger.info(`All containers healthy for ${siteName}`, {
+        if (serviceHealthStatus.allHealthy) {
+          consecutiveSuccessChecks++;
+          logger.info(`Health check passed ${consecutiveSuccessChecks}/${requiredSuccessChecks} for ${siteName}`, {
+            healthyServices: serviceHealthStatus.healthyServices,
             containerCount: healthChecks.length
           });
-          return;
+          
+          if (consecutiveSuccessChecks >= requiredSuccessChecks) {
+            logger.info(`All containers healthy for ${siteName} after ${Math.floor((Date.now() - startTime) / 1000)}s`, {
+              containerCount: healthChecks.length,
+              services: serviceHealthStatus.healthyServices
+            });
+            return;
+          }
+        } else {
+          consecutiveSuccessChecks = 0; // Reset counter
+          logger.info(`Health check not yet passed for ${siteName}:`, {
+            unhealthyServices: serviceHealthStatus.unhealthyServices,
+            waitingFor: serviceHealthStatus.waitingFor
+          });
         }
         
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        // Wait before next check
+        await new Promise(resolve => setTimeout(resolve, 5000)); // Increased to 5 seconds
         
       } catch (error) {
         lastError = error;
+        consecutiveSuccessChecks = 0; // Reset counter on error
         logger.warn(`Health check error for ${siteName}: ${error.message}`);
-        await new Promise(resolve => setTimeout(resolve, 3000));
+        await new Promise(resolve => setTimeout(resolve, 5000));
       }
     }
     
-    // Timeout reached
-    const errorMsg = `Health check timeout for ${siteName} after ${timeout}ms. Found ${containerCount} containers.`;
+    // Timeout reached - provide detailed error information
+    let finalStatus = null;
+    try {
+      const containers = await this.getContainersByPrefix(siteName);
+      finalStatus = await Promise.all(
+        containers.map(async (container) => {
+          const info = await container.inspect();
+          return {
+            service: this.extractServiceFromName(info.Name),
+            running: info.State.Running,
+            health: info.State.Health?.Status || 'none',
+            exitCode: info.State.ExitCode
+          };
+        })
+      );
+    } catch (e) {
+      logger.warn(`Could not get final status: ${e.message}`);
+    }
+    
+    const errorMsg = `Health check timeout for ${siteName} after ${timeout/1000}s. Found ${containerCount} containers.`;
     logger.error(errorMsg, {
       siteName,
       timeout,
       containerCount,
+      consecutiveSuccessChecks,
+      requiredSuccessChecks,
+      finalStatus,
       lastError: lastError?.message
     });
     throw new Error(errorMsg + (lastError ? ` Last error: ${lastError.message}` : ''));
+  }
+
+  // New method to check service-specific health
+  async checkServiceHealth(healthChecks, siteName) {
+    const healthyServices = [];
+    const unhealthyServices = [];
+    const waitingFor = [];
+    
+    for (const check of healthChecks) {
+      const service = check.service;
+      
+      if (!check.running) {
+        unhealthyServices.push(`${service}(not running)`);
+        continue;
+      }
+      
+      // Service-specific health checks
+      let isHealthy = false;
+      
+      switch (service) {
+        case 'mysql':
+          // For MySQL, check if it's accepting connections
+          isHealthy = await this.checkMySQLHealth(siteName, check);
+          break;
+          
+        case 'wordpress':
+          // For WordPress, check if Apache is responding
+          isHealthy = await this.checkWordPressHealth(siteName, check);
+          break;
+          
+        case 'redis':
+          // For Redis, check if it's accepting connections
+          isHealthy = await this.checkRedisHealth(siteName, check);
+          break;
+          
+        case 'mailhog':
+        case 'phpmyadmin':
+          // For these services, running + no exit code issues = healthy
+          isHealthy = check.running && (check.exitCode === 0 || check.exitCode === null);
+          break;
+          
+        default:
+          // Fallback: consider healthy if running and (no health check or healthy)
+          isHealthy = check.running && (check.health === 'healthy' || check.health === 'none');
+      }
+      
+      if (isHealthy) {
+        healthyServices.push(service);
+      } else {
+        unhealthyServices.push(service);
+        waitingFor.push(service);
+      }
+    }
+    
+    // Consider all healthy if critical services (mysql, wordpress) are healthy
+    const criticalServices = ['mysql', 'wordpress'];
+    const criticalHealthy = criticalServices.every(service => 
+      healthyServices.includes(service) || 
+      !healthChecks.some(c => c.service === service) // Service not present
+    );
+    
+    return {
+      allHealthy: criticalHealthy && unhealthyServices.length === 0,
+      healthyServices,
+      unhealthyServices,
+      waitingFor
+    };
+  }
+
+  // Service-specific health check methods
+  async checkMySQLHealth(siteName, containerInfo) {
+    try {
+      const containerName = `${siteName}_mysql`;
+      
+      // Try to execute a simple SQL query to ensure MySQL is ready
+      const testQuery = 'SELECT 1';
+      const command = `docker exec ${containerName} mysql -uwordpress -pwordpress -e "${testQuery}" wordpress 2>/dev/null`;
+      
+      const { stdout } = await execAsync(command, { timeout: 10000 });
+      return stdout.includes('1');
+    } catch (error) {
+      logger.debug(`MySQL health check failed for ${siteName}: ${error.message}`);
+      return false;
+    }
+  }
+
+  async checkWordPressHealth(siteName, containerInfo) {
+    try {
+      const containerName = `${siteName}_wordpress`;
+      
+      // Check if Apache is running and responding
+      const command = `docker exec ${containerName} curl -f -s http://localhost/wp-admin/install.php 2>/dev/null || echo "not-ready"`;
+      const { stdout } = await execAsync(command, { timeout: 10000 });
+      
+      // If we get any response (not "not-ready"), WordPress is likely ready
+      return !stdout.includes('not-ready');
+    } catch (error) {
+      logger.debug(`WordPress health check failed for ${siteName}: ${error.message}`);
+      return false;
+    }
+  }
+
+  async checkRedisHealth(siteName, containerInfo) {
+    try {
+      const containerName = `${siteName}_redis`;
+      
+      // Try to ping Redis
+      const command = `docker exec ${containerName} redis-cli ping 2>/dev/null`;
+      const { stdout } = await execAsync(command, { timeout: 5000 });
+      
+      return stdout.trim() === 'PONG';
+    } catch (error) {
+      logger.debug(`Redis health check failed for ${siteName}: ${error.message}`);
+      return false;
+    }
   }
 
   // Database helper methods (these would need to be implemented based on your database structure)
@@ -1068,6 +1332,57 @@ class DockerManager {
       return !!site;
     } catch (error) {
       return false;
+    }
+  }
+
+  async fixWordPressPermissions(sitePath) {
+    try {
+      logger.info(`Fixing WordPress permissions for ${sitePath}`, {
+        service: 'sanctum'
+      });
+      
+      // Get current user info
+      const currentUser = process.env.USER || 'mike';
+      const { stdout: uidResult } = await execAsync('id -u');
+      const { stdout: gidResult } = await execAsync('id -g');
+      const uid = uidResult.trim();
+      const gid = gidResult.trim();
+      
+      // Only fix WordPress directory permissions
+      const wpPath = path.join(sitePath, 'wordpress');
+      
+      try {
+        // Check if directory exists
+        const stats = await fs.stat(wpPath);
+        if (stats.isDirectory()) {
+          // WordPress files should be owned by host user
+          await execAsync(`chown -R ${uid}:${gid} "${wpPath}" 2>/dev/null || true`);
+          logger.info(`Fixed permissions for WordPress directory`, {
+            service: 'sanctum',
+            path: wpPath,
+            uid,
+            gid
+          });
+        }
+      } catch (error) {
+        logger.warn(`Could not fix WordPress permissions: ${error.message}`, {
+          service: 'sanctum',
+          path: wpPath
+        });
+      }
+      
+      // Log info about database/redis directories
+      logger.info(`Database and Redis directories are managed by their containers`, {
+        service: 'sanctum',
+        note: 'These directories may have different ownership (UID 999) which is normal'
+      });
+      
+    } catch (error) {
+      logger.error(`Failed to fix WordPress permissions: ${error.message}`, {
+        service: 'sanctum',
+        sitePath,
+        error: error.stack
+      });
     }
   }
 

@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     git \
     unzip \
     zip \
+    default-mysql-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Composer for PHP package management

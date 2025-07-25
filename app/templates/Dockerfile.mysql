@@ -1,0 +1,11 @@
+FROM mysql:8.0
+
+# Add script to handle user mapping
+COPY docker-entrypoint-initdb.d/ /docker-entrypoint-initdb.d/
+
+# Create a custom entrypoint that handles permissions
+COPY custom-mysql-entrypoint.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/custom-mysql-entrypoint.sh
+
+ENTRYPOINT ["/usr/local/bin/custom-mysql-entrypoint.sh"]
+CMD ["mysqld"]

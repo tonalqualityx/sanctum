@@ -118,6 +118,15 @@ class SiteManager {
         logger.warn(`Failed to set ownership before Docker operations: ${error.message}`);
       }
       
+      // Clean up any existing containers with the same name
+      try {
+        await this.dockerManager.cleanupExistingContainers(siteData.name);
+        logger.info(`Cleaned up any existing containers for ${siteData.domain}`);
+      } catch (cleanupError) {
+        logger.warn(`Container cleanup warning: ${cleanupError.message}`);
+        // Don't fail site creation for cleanup issues
+      }
+      
       const dockerSiteData = {
         ...siteData,
         path: sitePath,
@@ -208,89 +217,25 @@ class SiteManager {
   /**
    * Wait for Docker containers to be ready
    */
-  async waitForContainers(siteData, maxRetries = 15) {
-    let retries = 0;
-    
+  async waitForContainers(siteData, maxRetries = 25) { // Increased retries
     logger.info(`Starting container health check for ${siteData.domain}`, {
       siteId: siteData.id,
       maxRetries
     });
     
-    while (retries < maxRetries) {
-      try {
-        const status = await this.dockerManager.getSiteStatus(siteData.id);
-        
-        logger.info(`Container status check ${retries + 1}/${maxRetries} for ${siteData.domain}`, {
-          siteId: siteData.id,
-          status: status.status,
-          containerCount: status.containers ? status.containers.length : 0
-        });
-        
-        if (status && status.containers) {
-          // Log all container statuses
-          status.containers.forEach(container => {
-            logger.info(`Container ${container.name}: ${container.state} (health: ${container.health})`, {
-              siteId: siteData.id,
-              service: container.service
-            });
-          });
-          
-          // Check if wordpress and mysql containers are running
-          const wordpressContainer = status.containers.find(c => c.service === 'wordpress');
-          const mysqlContainer = status.containers.find(c => c.service === 'mysql');
-          
-          if (!wordpressContainer) {
-            logger.warn(`WordPress container not found for ${siteData.domain}`, { siteId: siteData.id });
-          }
-          if (!mysqlContainer) {
-            logger.warn(`MySQL container not found for ${siteData.domain}`, { siteId: siteData.id });
-          }
-          
-          if (wordpressContainer && wordpressContainer.state === 'running' && 
-              wordpressContainer.health === 'healthy' &&
-              mysqlContainer && mysqlContainer.state === 'running' && 
-              mysqlContainer.health === 'healthy') {
-            logger.info(`Containers are ready for ${siteData.domain}`, {
-              siteId: siteData.id
-            });
-            return;
-          }
-        } else {
-          logger.warn(`No container status returned for ${siteData.domain}`, {
-            siteId: siteData.id,
-            status
-          });
-        }
-      } catch (error) {
-        // Containers not ready yet
-        logger.warn(`Error checking container status: ${error.message}`, {
-          siteId: siteData.id,
-          retry: retries + 1
-        });
-      }
-      
-      retries++;
-      if (retries < maxRetries) {
-        logger.info(`Waiting 3 seconds before retry ${retries + 1}/${maxRetries}...`, {
-          siteId: siteData.id
-        });
-        await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 seconds
-      }
-    }
-    
-    // Get final status for error reporting
+    // Use the enhanced DockerManager health check
     try {
-      const finalStatus = await this.dockerManager.getSiteStatus(siteData.id);
-      logger.error(`Container health check timeout for ${siteData.domain}`, {
-        siteId: siteData.id,
-        finalStatus: finalStatus,
-        containers: finalStatus.containers
+      await this.dockerManager.waitForContainerHealth(siteData.name);
+      logger.info(`Container health check completed successfully for ${siteData.domain}`, {
+        siteId: siteData.id
       });
     } catch (error) {
-      logger.error(`Failed to get final status: ${error.message}`, { siteId: siteData.id });
+      logger.error(`Container health check failed for ${siteData.domain}: ${error.message}`, {
+        siteId: siteData.id,
+        error: error.stack
+      });
+      throw error;
     }
-    
-    throw new Error('Docker containers did not become ready within timeout period');
   }
 
   /**

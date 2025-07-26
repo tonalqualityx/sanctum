@@ -1,0 +1,79 @@
+# Dockerfile for WordPress with WP-CLI and proper permissions
+# This extends the official WordPress image to include WP-CLI
+
+ARG PHP_VERSION=8.1
+FROM wordpress:6.4-php${PHP_VERSION}-apache
+
+# Install WP-CLI
+RUN curl -O https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar \
+    && chmod +x wp-cli.phar \
+    && mv wp-cli.phar /usr/local/bin/wp
+
+# Install additional PHP extensions for WordPress development
+RUN apt-get update && apt-get install -y \
+    git \
+    unzip \
+    zip \
+    default-mysql-client \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Composer for PHP package management
+RUN curl -sS https://getcomposer.org/installer | php -- --install-dir=/usr/local/bin --filename=composer
+
+# Enable Apache modules
+RUN a2enmod rewrite headers expires
+
+# Create a custom entrypoint script to handle permissions dynamically
+RUN cat > /usr/local/bin/docker-entrypoint-custom.sh << 'EOF'
+#!/bin/bash
+set -e
+
+# Get the user ID from environment or default to www-data
+USER_ID=${HOST_UID:-33}
+GROUP_ID=${HOST_GID:-33}
+
+echo "Starting with UID: $USER_ID, GID: $GROUP_ID"
+
+# Update www-data user and group IDs to match host
+if [ "$USER_ID" != "33" ]; then
+    usermod -u $USER_ID www-data
+fi
+
+if [ "$GROUP_ID" != "33" ]; then
+    groupmod -g $GROUP_ID www-data
+fi
+
+# Ensure WordPress directories exist with proper permissions
+mkdir -p /var/www/html/wp-content/uploads
+mkdir -p /var/www/html/wp-content/themes
+mkdir -p /var/www/html/wp-content/plugins
+mkdir -p /var/www/html/wp-content/cache
+
+# Fix ownership of WordPress files
+chown -R www-data:www-data /var/www/html
+
+# Set proper permissions
+find /var/www/html -type d -exec chmod 755 {} \;
+find /var/www/html -type f -exec chmod 644 {} \;
+chmod -R 775 /var/www/html/wp-content
+
+# Update Apache to run as www-data (with updated UID/GID)
+export APACHE_RUN_USER=www-data
+export APACHE_RUN_GROUP=www-data
+
+# Call the original entrypoint
+exec docker-entrypoint.sh "$@"
+EOF
+
+# Make the custom entrypoint executable
+RUN chmod +x /usr/local/bin/docker-entrypoint-custom.sh
+
+# Set the working directory
+WORKDIR /var/www/html
+
+# Expose port 80
+EXPOSE 80
+
+# Use custom entrypoint
+ENTRYPOINT ["/usr/local/bin/docker-entrypoint-custom.sh"]
+CMD ["apache2-foreground"]

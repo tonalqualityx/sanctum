@@ -6,6 +6,7 @@ import NginxManager from './NginxManager.js';
 import { logger } from '../middleware/logging.js';
 import { validateDomain, sanitizeName } from '../utils/validation.js';
 import permissionHelper from '../utils/permissionHelper.js';
+import sslTrustHelper from '../utils/sslTrustHelper.js';
 import path from 'path';
 import fs from 'fs/promises';
 import { exec } from 'child_process';
@@ -159,7 +160,26 @@ class SiteManager {
         // Don't fail the entire site creation for hosts file issues
       }
       
-      // 5. Create nginx reverse proxy
+      // 5. Generate SSL certificate
+      try {
+        logger.info(`Generating SSL certificate for ${siteData.domain}`, {
+          service: 'sanctum',
+          siteId: siteData.id
+        });
+        await this.sslManager.generateCertificate(siteData.domain);
+        logger.info(`SSL certificate generated and trusted for ${siteData.domain}`, {
+          service: 'sanctum',
+          siteId: siteData.id
+        });
+      } catch (error) {
+        logger.warn(`Failed to generate SSL certificate for ${siteData.domain}: ${error.message}`, {
+          service: 'sanctum',
+          siteId: siteData.id
+        });
+        // Don't fail the entire site creation for SSL issues
+      }
+      
+      // 6. Create nginx reverse proxy
       try {
         // Get WordPress port from allocated ports
         const ports = await this.db.all(
@@ -189,7 +209,7 @@ class SiteManager {
         // Don't fail the entire site creation for nginx issues
       }
       
-      // 6. Update site status to stopped (ready to start)
+      // 7. Update site status to stopped (ready to start)
       await this.db.updateSite(siteData.id, { status: 'stopped' });
       
       logger.info(`Full WordPress site created: ${siteData.domain} (ID: ${siteData.id})`);

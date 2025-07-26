@@ -235,6 +235,14 @@ class SSLManager {
       logger.info(`Generated SSL certificate for ${domain}`);
       logger.info(`Certificate expires: ${certInfo.notAfter}`);
       
+      // Automatically trust the certificate
+      try {
+        await this.trustCertificate(domain);
+      } catch (error) {
+        logger.warn(`Could not automatically trust certificate for ${domain}:`, error.message);
+        logger.warn('You may need to manually trust this certificate or run with sudo');
+      }
+      
       return { certFile, keyFile };
       
     } catch (error) {
@@ -604,6 +612,122 @@ class SSLManager {
     } catch (error) {
       logger.error('Failed to load CA metadata:', error);
       return {};
+    }
+  }
+
+  // ==============================
+  // Certificate Trust Management
+  // ==============================
+
+  async trustCertificate(domain) {
+    try {
+      logger.info(`Installing certificate for ${domain} in system trust store...`);
+      
+      const certPaths = await this.getCertificatePaths(domain);
+      if (!certPaths) {
+        throw new Error(`Certificate not found for ${domain}`);
+      }
+      
+      // Use the trust script for better handling
+      const scriptPath = path.join(process.env.SANCTUM_HOME || path.join(process.env.HOME, 'sanctum'), 'app', 'trust-certificate-single.sh');
+      
+      if (await fs.pathExists(scriptPath)) {
+        try {
+          // Run the trust script
+          const { stdout, stderr } = await execAsync(`"${scriptPath}" "${domain}"`);
+          logger.info(`Certificate trust script output: ${stdout}`);
+          if (stderr) {
+            logger.warn(`Certificate trust script warnings: ${stderr}`);
+          }
+          return true;
+        } catch (error) {
+          // If script fails, fall back to direct method
+          logger.warn('Trust script failed, trying direct method...');
+        }
+      }
+      
+      // Fallback: Try to add to Chrome/Chromium NSS database (doesn't require sudo)
+      try {
+        // Check if certutil is available
+        await execAsync('which certutil');
+        
+        // Add to Chrome/Chromium certificate store
+        const nssDbPaths = [
+          `${process.env.HOME}/.pki/nssdb`,
+          `${process.env.HOME}/snap/chromium/current/.pki/nssdb`
+        ];
+        
+        for (const dbPath of nssDbPaths) {
+          if (await fs.pathExists(dbPath)) {
+            try {
+              // First, remove any existing certificate with the same nickname
+              await execAsync(`certutil -D -n "sanctum-${domain}" -d sql:${dbPath}`).catch(() => {});
+              
+              // Add the new certificate
+              await execAsync(`certutil -A -n "sanctum-${domain}" -t "C,," -i "${certPaths.certFile}" -d sql:${dbPath}`);
+              logger.info(`Added certificate to NSS database at ${dbPath}`);
+            } catch (error) {
+              logger.warn(`Could not add certificate to NSS database at ${dbPath}:`, error.message);
+            }
+          }
+        }
+        
+        logger.info('Certificate added to browser stores (system trust store requires sudo)');
+        logger.info(`To fully trust the certificate, run: sudo ${scriptPath} ${domain}`);
+      } catch (error) {
+        logger.warn('certutil not found - Chrome/Chromium certificate store not updated');
+        logger.info(`To trust the certificate, run: sudo ${scriptPath} ${domain}`);
+      }
+      
+      return true;
+      
+    } catch (error) {
+      logger.error(`Failed to trust certificate for ${domain}:`, error);
+      throw error;
+    }
+  }
+
+  async untrustCertificate(domain) {
+    try {
+      logger.info(`Removing certificate for ${domain} from system trust store...`);
+      
+      // Remove from system trust store
+      const systemCertPath = `/usr/local/share/ca-certificates/sanctum-${domain}.crt`;
+      
+      if (await fs.pathExists(systemCertPath)) {
+        await execAsync(`sudo rm -f "${systemCertPath}"`);
+        await execAsync('sudo update-ca-certificates --fresh');
+        logger.info(`Certificate for ${domain} removed from system trust store`);
+      }
+      
+      // Remove from Chrome/Chromium NSS database
+      try {
+        await execAsync('which certutil');
+        
+        const nssDbPaths = [
+          `${process.env.HOME}/.pki/nssdb`,
+          `${process.env.HOME}/snap/chromium/current/.pki/nssdb`
+        ];
+        
+        for (const dbPath of nssDbPaths) {
+          if (await fs.pathExists(dbPath)) {
+            try {
+              await execAsync(`certutil -D -n "sanctum-${domain}" -d sql:${dbPath}`);
+              logger.info(`Removed certificate from NSS database at ${dbPath}`);
+            } catch (error) {
+              // Certificate might not exist in this database
+            }
+          }
+        }
+      } catch (error) {
+        // certutil not available
+      }
+      
+      return true;
+      
+    } catch (error) {
+      logger.error(`Failed to untrust certificate for ${domain}:`, error);
+      throw error;
     }
   }
 

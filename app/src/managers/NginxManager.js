@@ -1,11 +1,18 @@
-import fs from 'fs-extra';
+import os from 'os';
 import path from 'path';
-import { promisify } from 'util';
-import { exec } from 'child_process';
+import fs from 'fs-extra';
+import { exec as execCb } from 'child_process';
+import util from 'util';
+const execAsync = util.promisify(execCb);
 import { logger } from '../middleware/logging.js';
 import SSLManager from './SSLManager.js';
 
-const execAsync = promisify(exec);
+const SANCTUM_HOME = process.env.SANCTUM_HOME || path.join(os.homedir(), 'sanctum');
+const SANCTUM_NGINX_SITES_ENABLED = path.join(SANCTUM_HOME, 'nginx', 'sites-enabled');
+const SANCTUM_NGINX_SITES_AVAILABLE = path.join(SANCTUM_HOME, 'nginx', 'sites-available');
+const SYSTEM_NGINX_INCLUDE_FILE = '/etc/nginx/sites-enabled/sanctum.conf';
+const SYSTEM_NGINX_CORE_FILE   = '/etc/nginx/conf.d/sanctum-core.conf';
+const SANCTUM_LOG_ROOT = '/var/log/sanctum';
 
 class NginxManager {
   constructor() {
@@ -40,6 +47,39 @@ class NginxManager {
     }
   }
 
+  async ensureCoreNginx() {
+    const coreContent = `
+log_format main '$remote_addr - $remote_user [$time_local] "$request" '
+                '$status $body_bytes_sent "$http_referer" '
+                '"$http_user_agent" "$http_x_forwarded_for"';
+
+limit_req_zone $binary_remote_addr zone=sanctum:10m rate=20r/s;
+
+proxy_set_header Host $host;
+proxy_set_header X-Real-IP $remote_addr;
+proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+proxy_set_header X-Forwarded-Proto $scheme;
+
+proxy_buffering on;
+proxy_buffers 16 16k;
+proxy_buffer_size 16k;
+`.trim() + '\n';
+
+    const includeContent = `
+# Load all Sanctum managed vhosts
+include ${SANCTUM_NGINX_SITES_ENABLED}/*.conf;
+`.trim() + '\n';
+
+    // Writable log directory
+    await execAsync(`sudo mkdir -p ${SANCTUM_LOG_ROOT}/sites && sudo chown -R www-data:www-data ${SANCTUM_LOG_ROOT}`);
+
+    // Write core file
+    await execAsync(`sudo tee ${SYSTEM_NGINX_CORE_FILE} >/dev/null <<'EOF'\n${coreContent}EOF`);
+
+    // Write include file
+    await execAsync(`sudo tee ${SYSTEM_NGINX_INCLUDE_FILE} >/dev/null <<'EOF'\n${includeContent}EOF`);
+  }
+
   // ==============================
   // Configuration Management
   // ==============================
@@ -66,6 +106,8 @@ class NginxManager {
         .replace(/\$\{SITE_NAME\}/g, siteData.name || siteData.domain)
         .replace(/\$\{DOMAIN\}/g, siteData.domain)
         .replace(/\$\{WP_PORT\}/g, wpPort)
+        .replace(/\$\{SANCTUM_HOME\}/g, SANCTUM_HOME)
+        .replace(/\$\{SANCTUM_LOG_ROOT\}/g, SANCTUM_LOG_ROOT)
         .replace(/\$\{SSL_CERT_PATH\}/g, certPaths.certFile)
         .replace(/\$\{SSL_KEY_PATH\}/g, certPaths.keyFile)
         .replace(/\$\{USER\}/g, process.env.USER || 'sanctum');
@@ -92,6 +134,8 @@ class NginxManager {
 
   async enableSite(domain) {
     try {
+      await this.ensureCoreNginx();
+      
       const availablePath = path.join(this.sitesAvailableDir, `${domain}.conf`);
       const enabledPath = path.join(this.sitesEnabledDir, `${domain}.conf`);
       
@@ -146,31 +190,18 @@ class NginxManager {
   }
 
   async reloadNginx() {
+    // Validate config first
+    await execAsync('sudo nginx -t');
+
+    // Prefer systemd
     try {
-      // Test configuration before reloading
-      await this.testNginxConfig();
-      
-      // Check if nginx is running
-      const isRunning = await this.isNginxRunning();
-      if (!isRunning) {
-        logger.warn('Nginx is not running, starting it...');
-        await this.startNginx();
-        return true;
-      }
-      
-      // Reload nginx
-      const { stdout, stderr } = await execAsync('sudo nginx -s reload');
-      
-      if (stderr && !stderr.includes('warning')) {
-        throw new Error(`Nginx reload failed: ${stderr}`);
-      }
-      
-      logger.info('Nginx reloaded successfully');
+      await execAsync('sudo systemctl reload nginx');
       return true;
-      
-    } catch (error) {
-      logger.error('Failed to reload nginx:', error);
-      throw error;
+    } catch {
+      // Fallback to direct signal
+      const { stdout, stderr } = await execAsync('sudo nginx -s reload', { shell: '/bin/bash' });
+      // nginx often writes a notice to stderr on success
+      return true;
     }
   }
 
@@ -181,6 +212,8 @@ class NginxManager {
   async createSiteProxy(siteData) {
     try {
       logger.info(`Creating nginx proxy for ${siteData.domain}...`);
+      
+      await this.ensureCoreNginx();
       
       // Generate configuration
       const configPath = await this.generateSiteConfig(siteData);
